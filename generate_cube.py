@@ -1,6 +1,6 @@
 from fenics import *
 
-mesh = UnitCubeMesh.create(20, 20, 20, CellType.Type.hexahedron)
+mesh = UnitCubeMesh.create(10, 10, 10, CellType.Type.hexahedron)
 
 V = FunctionSpace(mesh, 'CG', 1)
 

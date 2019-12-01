@@ -7,6 +7,10 @@ data = servermanager.Fetch(reader)
 cells = data.GetCells()
 cells.InitTraversal()
 
+# Initialize faces
+data.InitializeFacesRepresentation(1)
+faces = data.GetFaces()
+
 list_cylinders = []
 
 import vtk
