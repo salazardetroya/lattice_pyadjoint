@@ -13,11 +13,10 @@ except ImportError:
 
 height = 10.0
 width = 30.0
-n_elem_side_y = 10
-n_elem_side_x = 30
-mesh = BoxMesh(Point(0, 0, 0), Point(width, height, height), n_elem_side_x, n_elem_side_y, n_elem_side_y)
+n_elem_side_y = 20
+n_elem_side_x = 60
+mesh = BoxMesh.create([Point(0, 0, 0), Point(width, height, height)], [n_elem_side_x, n_elem_side_y, n_elem_side_y], CellType.Type.hexahedron)
 
-W = VectorFunctionSpace(mesh, "CG", 1)
 
 # Building the effective constituve tensor
 vectors = list(itertools.product([1.0/sqrt(2.0), -1.0/sqrt(2.0)],repeat=2))
@@ -34,16 +33,21 @@ all_normals = [normals_1, normals_2, normals_3]
 
 RHO = VectorFunctionSpace(mesh, "DG", 0)
 A_list = Function(RHO, name='Control')
-A_list.interpolate(Constant((3.0, 1.0, 1.0)))
+A_list.interpolate(Constant((0.0001, 0.0001, 0.0001)))
 
-length_truss = 1.0
+length_truss = width / n_elem_side_x * np.sqrt(2) / 2.0
 
 def epsilon(u):
     return 0.5*(nabla_grad(u) + nabla_grad(u).T)
 
 from ufl import i, j, k, l
 def sigma(r, A_list):
-    Cijkl = [length_truss*A_section*all_normals[index][row_index][i]*all_normals[index][row_index][j]*all_normals[index][row_index][k]*all_normals[index][row_index][l] for index, A_section in enumerate(split(A_list)) for row_index in range(4) ]
+    Cijkl = [length_truss*A_section*
+                    all_normals[index][row_index][i]*
+                    all_normals[index][row_index][j]*
+                    all_normals[index][row_index][k]*
+                    all_normals[index][row_index][l]
+                    for index, A_section in enumerate(split(A_list)) for row_index in range(4) ]
     C = as_tensor(sum(Cijkl), (i,j,k,l))
     return C[i,j,k,l]*epsilon(r)[k,l]
 
@@ -56,7 +60,8 @@ class DirichletBoundary(SubDomain):
 # Define class marking Neumann boundary (y = 0 or y = 1)
 class NeumanBoundary(SubDomain):
   def inside(self, x, on_boundary):
-    return near(x[0], width) and between(x[1], (height*1.0/4.0, height*3.0/4.0)) and between(x[2], (height*1.0/4.0, height*3.0/4.0))
+    return near(x[0], width) and between(x[1], (height*1.0/4.0, height*3.0/4.0)) \
+            and between(x[2], (height*1.0/4.0, height*3.0/4.0))
 
 # Mark facets of the mesh
 boundaries = MeshFunction('size_t', mesh, mesh.geometric_dimension() - 1)
@@ -67,6 +72,7 @@ DirichletBoundary().mark(boundaries, 1)
 ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
 
 # Define test and trial functions
+W = VectorFunctionSpace(mesh, "CG", 1)
 v = TestFunction(W)
 u = TrialFunction(W)
 
@@ -81,7 +87,7 @@ solve(a==L, u_sol, bcs=[bc])
 J = assemble(inner(u_sol, traction)*ds(2))
 
 allctrls = File("output/allcontrols.pvd")
-rho_viz = Function(RHO, name="ControlVisualisation")
+rho_viz = Function(RHO, name="TrussArea")
 def eval_derivative_cb(j, dj, rho):
     rho_viz.assign(rho)
     allctrls << rho_viz
@@ -91,14 +97,18 @@ Jhat = ReducedFunctional(J, rho, derivative_cb_post=eval_derivative_cb)
 Jhat.derivative()
 File("u_sol.pvd") << u_sol
 
-# Bound constraints
-lb = 0.1
-ub = 1.0
+# Bound constraints. This is the area.
+lb = 0.0001
+ub = 0.005
 
-delta = 1.5  # The aspect ratio of the domain, 1 high and \delta wide
-V = Constant(1.0/3) * delta  # want the fluid to occupy 1/3 of the domain
 
-volume_constraint = UFLInequalityConstraint((V/delta - inner(A_list, A_list))*dx, rho)
+# Annotate to keep pyadjoint from recording this operation.
+V = assemble(Constant(1.0)*dx(domain=mesh), annotate=False) / (n_elem_side_x*n_elem_side_y**2)
+delta = 0.2  # Volume ratio for the trusses
+trusses_per_plane = 4 * 3
+mass_per_variable = length_truss * trusses_per_plane
+volume_constraint = UFLInequalityConstraint((V*delta - \
+                    mass_per_variable*(A_list[0] + A_list[1] + A_list[2]))*dx, rho)
 
 problem = MinimizationProblem(Jhat, bounds=(lb, ub), constraints=volume_constraint)
 parameters = {'maximum_iterations': 100}
