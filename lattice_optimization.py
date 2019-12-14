@@ -3,6 +3,14 @@ from fenics_adjoint import *
 import itertools
 import numpy as np
 
+try:
+    from pyadjoint import ipopt  # noqa: F401
+except ImportError:
+    print("""This example depends on IPOPT and Python ipopt bindings. \
+  When compiling IPOPT, make sure to link against HSL, as it \
+  is a necessity for practical problems.""")
+    raise
+
 height = 10.0
 width = 30.0
 n_elem_side_y = 10
@@ -48,8 +56,7 @@ class DirichletBoundary(SubDomain):
 # Define class marking Neumann boundary (y = 0 or y = 1)
 class NeumanBoundary(SubDomain):
   def inside(self, x, on_boundary):
-    #return x[1] > height - 0.001 and between(x[0], (0.0, width/5.0)) and on_boundary
-    return near(x[0], width)
+    return near(x[0], width) and between(x[1], (height*1.0/4.0, height*3.0/4.0)) and between(x[2], (height*1.0/4.0, height*3.0/4.0))
 
 # Mark facets of the mesh
 boundaries = MeshFunction('size_t', mesh, mesh.geometric_dimension() - 1)
@@ -60,14 +67,42 @@ DirichletBoundary().mark(boundaries, 1)
 ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
 
 # Define test and trial functions
-u = TestFunction(W)
-v = TrialFunction(W)
+v = TestFunction(W)
+u = TrialFunction(W)
 
-a = inner(sigma(u, A_list), epsilon(v)[i,j])*dx
-L = inner(Constant((0.0, -1.0, 0.0)), v)*ds(2)
+a = inner(epsilon(v)[i,j], sigma(u, A_list))*dx
+traction = Constant((0.0, -1.0, 0.0))
+L = inner(traction, v)*ds(2)
 
 bc = DirichletBC(W, Constant((0.0, 0.0, 0.0)), boundaries, 1)
 
 u_sol = Function(W)
 solve(a==L, u_sol, bcs=[bc])
+J = assemble(inner(u_sol, traction)*ds(2))
+
+allctrls = File("output/allcontrols.pvd")
+rho_viz = Function(RHO, name="ControlVisualisation")
+def eval_derivative_cb(j, dj, rho):
+    rho_viz.assign(rho)
+    allctrls << rho_viz
+
+rho = Control(A_list)
+Jhat = ReducedFunctional(J, rho, derivative_cb_post=eval_derivative_cb)
+Jhat.derivative()
 File("u_sol.pvd") << u_sol
+
+# Bound constraints
+lb = 0.1
+ub = 1.0
+
+delta = 1.5  # The aspect ratio of the domain, 1 high and \delta wide
+V = Constant(1.0/3) * delta  # want the fluid to occupy 1/3 of the domain
+
+volume_constraint = UFLInequalityConstraint((V/delta - inner(A_list, A_list))*dx, rho)
+
+problem = MinimizationProblem(Jhat, bounds=(lb, ub), constraints=volume_constraint)
+parameters = {'maximum_iterations': 100}
+
+
+solver = IPOPTSolver(problem, parameters=parameters)
+rho_opt = solver.solve()
