@@ -2,8 +2,15 @@ from paraview.simple import *
 import vtk
 import numpy as np
 
-reader = XMLUnstructuredGridReader(FileName=['/home/miguelito/myprojects/blog_posts/lattice/output/allcontrols000048.vtu'])
-#reader = XMLUnstructuredGridReader(FileName=['./function000000.vtu'])
+import sys
+
+if sys.argv[1]:
+    filename = sys.argv[1]
+else:
+    filename = '/home/miguelito/myprojects/blog_posts/lattice/output/allcontrols000048.vtu'
+
+reader = XMLUnstructuredGridReader(FileName=[filename])
+radius_scale = 1.0
 
 data = servermanager.Fetch(reader)
 cells = data.GetCells()
@@ -104,7 +111,7 @@ for i in range(cells.GetNumberOfCells()):
             line.Update()
 
             #set tube radius
-            tube.SetRadius(0.001*radius_tup[j])
+            tube.SetRadius(radius_scale*radius_tup[j])
             tube.Update()
 
             input1.ShallowCopy(tube.GetOutput())
@@ -117,3 +124,58 @@ output = vtk.vtkXMLPolyDataWriter()
 output.SetInputData(model.GetOutput())
 output.SetFileName('octet_truss.vtp')
 output.Write()
+
+# Create the graphics structure. The renderer renders into the render
+# window. The render window interactor captures mouse events and will
+# perform appropriate camera or actor manipulation depending on the
+# nature of the events.
+ren = vtk.vtkRenderer()
+renWin = vtk.vtkRenderWindow()
+renWin.AddRenderer(ren)
+iren = vtk.vtkRenderWindowInteractor()
+iren.SetRenderWindow(renWin)
+
+colors = vtk.vtkNamedColors()
+# Set the background color.
+bkg = map(lambda x: x / 255.0, [26, 51, 102, 255])
+colors.SetColor("BkgColor", *bkg)
+
+# The mapper is responsible for pushing the geometry into the graphics
+# library. It may also do color mapping, if scalars or other
+# attributes are defined.
+cylinderMapper = vtk.vtkPolyDataMapper()
+cylinderMapper.SetInputConnection(model.GetOutputPort())
+
+# The actor is a grouping mechanism: besides the geometry (mapper), it
+# also has a property, transformation matrix, and/or texture map.
+# Here we set its color and rotate it -22.5 degrees.
+cylinderActor = vtk.vtkActor()
+cylinderActor.SetMapper(cylinderMapper)
+cylinderActor.GetProperty().SetColor(colors.GetColor3d("Beige"))
+cylinderActor.RotateX(30.0)
+cylinderActor.RotateY(-45.0)
+
+# Add the actors to the renderer, set the background and size
+ren.AddActor(cylinderActor)
+renWin.SetSize(300, 300)
+ren.SetBackground(colors.GetColor3d("SlateGray"))
+renWin.SetWindowName('Cylinder')
+
+# This allows the interactor to initalize itself. It has to be
+# called before an event loop.
+iren.Initialize()
+
+# We'll zoom in a little by accessing the camera and invoking a "Zoom"
+# method on it.
+ren.ResetCamera()
+ren.GetActiveCamera().Zoom(1.5)
+renWin.Render()
+
+# Start the event loop.
+iren.Start()
+
+exporter = vtk.vtkX3DExporter()
+exporter.SetRenderWindow(renWin)
+exporter.SetFileName("small_lattice.x3d")
+exporter.Write()
+exporter.Update()

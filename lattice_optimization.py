@@ -17,8 +17,11 @@ n_elem_side_y = 20
 n_elem_side_x = 60
 mesh = BoxMesh.create([Point(0, 0, 0), Point(width, height, height)], [n_elem_side_x, n_elem_side_y, n_elem_side_y], CellType.Type.hexahedron)
 
+output_dir = "./large"
 
 # Building the effective constituve tensor
+# Four struts per plane and their respective normals (not sure if they should
+# be just two given that they are aligned
 vectors = list(itertools.product([1.0/sqrt(2.0), -1.0/sqrt(2.0)],repeat=2))
 vectors_np = np.array(vectors)
 zeros_column = np.zeros((len(vectors),1))
@@ -37,12 +40,18 @@ A_list.interpolate(Constant((0.0001, 0.0001, 0.0001)))
 
 length_truss = width / n_elem_side_x * np.sqrt(2) / 2.0
 
+# Material properties of alumina
+E = 300e5 # N / cm^2
+rho = 3.5 # Mg / m^3 or g / cm^3
+
 def epsilon(u):
     return 0.5*(nabla_grad(u) + nabla_grad(u).T)
 
 from ufl import i, j, k, l
+unit_cell_volume = length_truss**3 * 4.0 / np.sqrt(2.0)
 def sigma(r, A_list):
-    Cijkl = [length_truss*A_section*
+    # Factor 2 because this plane of struts is repeated twice in the unit cell
+    Cijkl = [Constant(E) * 2.0 * length_truss * A_section / Constant(unit_cell_volume) *
                     all_normals[index][row_index][i]*
                     all_normals[index][row_index][j]*
                     all_normals[index][row_index][k]*
@@ -77,25 +86,25 @@ v = TestFunction(W)
 u = TrialFunction(W)
 
 a = inner(epsilon(v)[i,j], sigma(u, A_list))*dx
-traction = Constant((0.0, -1.0, 0.0))
+traction = Constant((0.0, -10.0, 0.0))
 L = inner(traction, v)*ds(2)
 
 bc = DirichletBC(W, Constant((0.0, 0.0, 0.0)), boundaries, 1)
 
 u_sol = Function(W)
 solve(a==L, u_sol, bcs=[bc])
+File(output_dir + "/displacement.pvd") << u_sol
 J = assemble(inner(u_sol, traction)*ds(2))
 
-allctrls = File("output/allcontrols.pvd")
+allctrls = File(output_dir + "/allcontrols.pvd")
 rho_viz = Function(RHO, name="TrussArea")
-def eval_derivative_cb(j, dj, rho):
-    rho_viz.assign(rho)
+def eval_derivative_cb(j, dj, vf):
+    rho_viz.assign(vf)
     allctrls << rho_viz
 
-rho = Control(A_list)
-Jhat = ReducedFunctional(J, rho, derivative_cb_post=eval_derivative_cb)
+vf = Control(A_list)
+Jhat = ReducedFunctional(J, vf, derivative_cb_post=eval_derivative_cb)
 Jhat.derivative()
-File("u_sol.pvd") << u_sol
 
 # Bound constraints. This is the area.
 lb = 0.0001
@@ -103,15 +112,16 @@ ub = 0.005
 
 
 # Annotate to keep pyadjoint from recording this operation.
-V = assemble(Constant(1.0)*dx(domain=mesh), annotate=False) / (n_elem_side_x*n_elem_side_y**2)
-delta = 0.2  # Volume ratio for the trusses
-trusses_per_plane = 4 * 3
-mass_per_variable = length_truss * trusses_per_plane
+V = assemble(Constant(rho)*dx(domain=mesh), annotate=False) / (n_elem_side_x*n_elem_side_y**2)
+delta = 0.05  # Volume ratio for the trusses
+print("Total mass unit cell: {0:.5f}. Constrained mass unit cell: {1:.5f}".format(V, V*delta))
+trusses_per_plane = 4 * 2
+mass_per_variable = length_truss * trusses_per_plane * rho
 volume_constraint = UFLInequalityConstraint((V*delta - \
-                    mass_per_variable*(A_list[0] + A_list[1] + A_list[2]))*dx, rho)
+                    mass_per_variable*(A_list[0] + A_list[1] + A_list[2]))*dx, vf)
 
 problem = MinimizationProblem(Jhat, bounds=(lb, ub), constraints=volume_constraint)
-parameters = {'maximum_iterations': 100}
+parameters = {'maximum_iterations': 400}
 
 
 solver = IPOPTSolver(problem, parameters=parameters)
